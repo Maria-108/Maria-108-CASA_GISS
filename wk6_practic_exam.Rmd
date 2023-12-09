@@ -1,0 +1,230 @@
+---
+title: "wk6"
+output: html_document
+date: "2023-11-30"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r cars}
+summary(cars)
+```
+
+## Including Plots
+
+You can also embed plots, for example:
+
+```{r pressure, echo=FALSE}
+plot(pressure)
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+
+State research question
+
+## https://github.com/CASA0005-coursework/casa0005-practice-exam-2023-24-Maria-108.git
+
+## Week 6 Homework - Practice Exam question
+## Data used: New York Evictions 2020
+## Available Data Links: 
+## List of evictions -> https://data.cityofnewyork.us/City-Government/Evictions/6z8x-wfk4
+## New York city community districts -> https://data.cityofnewyork.us/City-Government/Community-Districts/yfnk-k7r4
+
+
+## First you need to install and load all necessary packages that will be used in this R Markdown file.
+
+```{r}
+library(spatstat)
+library(here)
+library(sp)
+library(rgeos)
+library(maptools)
+library(tmap)
+library(sf)
+library(geojson)
+library(geojsonio)
+library(tmaptools)
+library(readxl)
+library(tidyverse)
+library(janitor)
+```
+
+## Using the links above, download list of evictions "NYC_evictions" as a shapefile, and New York city community districts "NYC_districts" as csv file. 
+```{r}
+NYC_districts <- st_read(here::here("Community Districts", "geo_export_4df1d46b-c2c0-42a1-b0a3-50378bd068b2.shp"))
+
+NYC_evictions <- read_csv(here::here("Evictions_20231120.csv"))
+```
+
+## Remove all N/A values from NYC_evictions. This helps to filter out the data and changes the column type from character to numeric values. 
+```{r}
+eviction_points <- na.omit(NYC_evictions)
+View(eviction_points)
+```
+
+## View both datasets
+```{r}
+View(NYC_districts)
+```
+
+## Use pivot_longer to rearrange the colums to variables and their class in order to check whether a column is classed as character or numeric.
+```{r}
+eviction_data <- eviction_points%>%
+  summarise_all(class)%>%
+  pivot_longer(everything(),
+               names_to = "All_variables",
+               values_to = "Variable_class")
+```
+
+## View the new dataset
+```{r}
+View(eviction_data)
+```
+
+## Data wrangling --> check the coordinates and set the crs to 4326 - which corresponds to New York and is measured in meteres. 
+```{r}
+points <- eviction_points%>%
+  #also possible to use something like drop_na(Longitdue, Latitude) 
+  filter(Longitude<0 & Latitude>0)%>%
+
+  st_as_sf(., coords = c("Longitude", "Latitude"), 
+                   crs = 4326)
+```
+
+## Make a map
+```{r}
+tmap_mode("plot")
+tm_shape(NYC_districts) +
+  tm_polygons(col = NA, alpha = 0.5) +
+tm_shape(points) +
+  tm_dots(col = "blue")
+```
+```{r}
+NYC_areas <- NYC_districts%>%
+  st_transform(., 4326)
+
+points_sub <- points[NYC_areas,]
+```
+
+```{r}
+points_sub_2020<-points_sub%>%
+  clean_names()%>%
+  filter(str_detect(executed_date, "2020"))%>%
+ # filter(eviction_legal_possession=="Eviction")%>%
+  filter(residential_commercial=="Residential")
+```
+
+```{r}
+tmap_mode("plot")
+tm_shape(NYC_districts) +
+  tm_polygons(col = NA, alpha = 0.5) +
+tm_shape(points_sub_2020) +
+  tm_dots(col = "blue")
+```
+## Data analysis
+```{r}
+community_areas_projected <- NYC_districts %>%
+  st_transform(., 6538)
+
+points_sub_2020_projected <- points_sub_2020 %>%
+  st_transform(., 6538)
+```
+
+```{r}
+window <- as.owin(community_areas_projected)
+plot(window)
+
+#create a sp object
+points_sub_2020_projected_sp<- points_sub_2020_projected %>%
+  as(., 'Spatial')
+#create a ppp object
+points_sub_2020_projected_sp.ppp <- ppp(x=points_sub_2020_projected_sp@coords[,1],
+                          y=points_sub_2020_projected_sp@coords[,2],
+                          window=window)
+```
+```{r}
+K <- points_sub_2020_projected_sp.ppp %>%
+  Kest(., correction="border") %>%
+  plot()
+```
+
+```{r}
+library(sp)
+
+#first extract the points from the spatial points data frame
+points_todf <- points_sub_2020_projected_sp %>%
+  coordinates(.)%>%
+  as.data.frame()
+
+#now run the dbscan analysis
+points_todf_DBSCAN <- points_todf %>%
+  fpc::dbscan(.,eps = 1000, MinPts = 50)
+
+points_todf%>%
+  dbscan::kNNdistplot(.,k=50)
+
+#now quickly plot the results
+plot(points_todf_DBSCAN, points_todf, main = "DBSCAN Output", frame = F)
+plot(community_areas_projected$geometry, add=T)
+```
+```{r}
+points_todf<- points_todf %>%
+  mutate(dbcluster=points_todf_DBSCAN$cluster)
+```
+
+```{r}
+tosf <- points_todf%>%
+  st_as_sf(., coords = c("coords.x1", "coords.x2"), 
+                   crs = 6538)%>%
+  filter(dbcluster>0)
+```
+
+## When mapping out the data, there are two ways to go about this. The 1st method is to do a ggplot, and the 2nd method is to do a tmap. Both display the dataset as clusters, the only difference is that RColorBrewer allows you to choose which type of qualitative palette to use - which are best for displaying categorical data, or in this case, clusters.
+
+## Map version 1
+```{r}
+ggplot(data = community_areas_projected) +
+  # add the geometry of the community areas
+  geom_sf() +
+  # add the geometry of the points - i have had to set the data here to add the layer
+  geom_sf(data = tosf, size = 0.4, colour=tosf$dbcluster, fill=tosf$dbcluster)
+```
+## OR - use map version 2
+```{r}
+library(tmap)
+library(sf)
+
+#tmaptools::palette_explorer()
+library(RColorBrewer)
+library(tmaptools)
+colours<- get_brewer_pal("Set1", n = 19)
+
+tmap_mode("plot")
+tm_shape(NYC_districts) +
+  tm_polygons(col = NA, alpha = 0.5) +
+tm_shape(tosf) +
+  tm_dots(col = "dbcluster",  palette = colours, style = "cat")
+```
+Add detail to the following sections below, and the sections above to explain exactly what you are doing in the code markdown and why. Refer to GISS lecture notes if necessary. See Andy's example for ideas on how to structure (wk6 on Moodle).
+
+Tips - make sure to highlight this at the beginning of the markdown file.
+
+Don't forget to stage,commit and push onto github.
+
+Use 
+## Blue - for when you are making categories/sections to highligh the structure/process of your code
+Use 
+Black - for any other comments that you want to make, especially descriptive ones when you are explain what you are doing and why.
+
+## Intepretation
+## Reflection
+## Discussion
+## Notes
